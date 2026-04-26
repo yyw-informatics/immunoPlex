@@ -1,0 +1,52 @@
+# Plans (internal working documents)
+plans/
+
+# Ignore analysis projects and outputs
+analyses/projects/
+analyses/.git/
+archive/
+
+# Ignore temporary R helper scripts
+tmp_*.R
+
+# R build artifacts
+.Rproj.user/
+.Rhistory
+.RData
+.Ruserdata
+.Rbuildignore
+
+# R package build files
+*.Rcheck/
+*.tar.gz
+
+# OS/editor junk
+.DS_Store
+Thumbs.db
+*.swp
+*.swo
+.vscode/
+.here
+.lintr
+
+# Package metadata (generated during build/install)
+/doc/
+/Meta/
+
+# Generated HTML from README.Rmd (not needed in git)
+README.html
+
+# Citation file (waiting for finalized URL)
+inst/CITATION
+
+# HPC / run logs
+logs/
+
+# Pipeline outputs (figures, tables, model fits - regeneratable)
+outputs/
+
+# Simulation cache, logs, and dashboards (regeneratable artifacts)
+inst/simulations/cache/
+inst/simulations/logs/
+inst/simulations/dashboards/
+

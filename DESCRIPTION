@@ -1,0 +1,49 @@
+Package: immunoPlex
+Title: Statistical Analysis of Multiplex Cytokine Data with Censoring
+Version: 0.0.0.9000
+Authors@R: 
+    person("Yuanyuan", "Wang", , "yyw451@gmail.com", role = c("aut", "cre"))
+Description: Provides comprehensive statistical methods for analyzing multiplex
+    cytokine expression data with limit-of-detection (LOD) censoring. Supports
+    Gamma GLMM, Tobit, accelerated failure time (AFT), and Gaussian glmmTMB
+    models with automated model selection, preprocessing utilities, and
+    diagnostic plotting. Additionally supports PLS-DA analysis for multivariate
+    cytokine pattern discovery.
+License: MIT
+Encoding: UTF-8
+Roxygen: list(markdown = TRUE)
+RoxygenNote: 7.3.3
+Depends: 
+    R (>= 3.5)
+Imports:
+    DHARMa,
+    dplyr,
+    effectsize,
+    exact2x2,
+    ggalluvial,
+    ggplot2,
+    ggrepel,
+    glmmTMB,
+    magrittr,
+    moments,
+    patchwork,
+    rlang,
+    scales,
+    statmod,
+    survival,
+    tibble,
+    tidyr
+LazyData: true
+Suggests:
+    testthat (>= 3.0.0),
+    brms,
+    broom.mixed,
+    censReg,
+    devtools,
+    ggsci,
+    knitr,
+    MASS,
+    rmarkdown,
+    ropls
+Config/testthat/edition: 3
+VignetteBuilder: knitr

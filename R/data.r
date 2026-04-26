@@ -1,0 +1,70 @@
+# Data documentation for immunoPlex package
+
+#' Example immunoplex cytokine dataset
+#'
+#' A synthetic dataset simulating multiplex cytokine measurements with 
+#' censoring (limit of detection issues) for demonstration and testing purposes.
+#' The data includes measurements for multiple cytokines across subjects with
+#' different disease status and timepoints.
+#'
+#' @format A list with three components:
+#' \describe{
+#'   \item{expression}{A data.frame with cytokine concentration measurements in wide format.
+#'     Rows represent samples, columns represent different cytokines. Sample identifiers
+#'     are stored in rownames.}
+#'   \item{metadata}{A data.frame containing sample metadata with columns:
+#'     \itemize{
+#'       \item sample_id: Unique sample identifier
+#'       \item subject_id: Subject identifier for linking repeated measurements
+#'       \item timepoint: Factor indicating measurement timepoint (e.g., "baseline", "followup")
+#'       \item disease: Factor indicating disease status or condition
+#'       \item age: Numeric age covariate
+#'     }}
+#'   \item{lod_lookup}{A data.frame with limit of detection information containing columns:
+#'     \itemize{
+#'       \item cytokine: Name of the cytokine (matching column names in expression)
+#'       \item lod: Numeric limit of detection value for each cytokine
+#'     }}
+#' }
+#'
+#' @details
+#' This example dataset is provided to demonstrate the workflow of the immunoPlex package,
+#' including:
+#' \itemize{
+#'   \item Preprocessing cytokine data with \code{\link{immuno_preprocess}}
+#'   \item Handling censored observations below the limit of detection
+#'   \item Fitting censored data models with \code{\link{fit_one}} and \code{\link{fit_models}}
+#'   \item Comparing different LOD handling strategies with \code{\link{compare_lod_models}}
+#'   \item Analyzing detection frequency changes with \code{\link{mcnemar_detection}}
+#' }
+#'
+#' The dataset contains realistic patterns of cytokine expression with approximately
+#' 10-30\% of observations below the limit of detection, varying by cytokine.
+#'
+#' @seealso \code{\link{immuno_preprocess}}, \code{\link{fit_one}}, \code{\link{prepare_cytokine_data}}
+#'
+#' @examples
+#' # Load the example data
+#' data("immunoplex_example", package = "immunoPlex")
+#'
+#' # Examine the structure
+#' str(immunoplex_example)
+#'
+#' # View available cytokines
+#' names(immunoplex_example$expression)
+#'
+#' # View LOD values
+#' immunoplex_example$lod_lookup
+#'
+#' # Basic preprocessing
+#' \dontrun{
+#' processed <- immuno_preprocess(
+#'   expr = immunoplex_example$expression,
+#'   meta = immunoplex_example$metadata,
+#'   lod_lookup = immunoplex_example$lod_lookup,
+#'   lod_methods = "half"
+#' )
+#' }
+#'
+"immunoplex_example"
+

@@ -1,0 +1,35 @@
+# benchmark_config.yaml — Centralized sample-size configuration
+#
+# Each benchmark lists its "original" sample sizes (matching v3 cache)
+# and "extra" sizes to run via --extra_n.  The extra_cell_id_offset
+# ensures supplement cell IDs never collide with original ones.
+#
+# Usage:
+#   Rscript benchmark_ancova.R --extra_n 10 --n_reps 500
+#   (reads extra sizes from this file; --extra_n value selects which to run)
+
+sample_sizes:
+  B0_preprocessing:
+    original: [40, 100, 200]
+    extra: [10, 20]
+  B1_censoring:
+    original: [20, 40, 100, 200]
+    extra: [10]
+  B2_mcnemar:
+    original: [15, 30, 50, 100, 200]
+    extra: [10, 20]
+  B3_ancova:
+    original: [20, 50, 100]
+    extra: [10]
+  B4_plsda:
+    original: [20, 50, 100]
+    extra: [10]
+  B5_substitution:
+    original: [40, 100, 200]
+    extra: [10, 20]
+  B6_replicates:
+    original: [40, 100, 200]
+    extra: [10, 20]
+
+# Offset added to cell_id for extra-size cells (avoids collision with v3 cache)
+extra_cell_id_offset: 10000
