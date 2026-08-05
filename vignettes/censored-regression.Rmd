@@ -1,0 +1,259 @@
+---
+title: "Censored regression for multiplex cytokine data"
+author: "immunoPlex package"
+date: "`r Sys.Date()`"
+output: rmarkdown::html_vignette
+vignette: >
+  %\VignetteIndexEntry{Censored regression for multiplex cytokine data}
+  %\VignetteEngine{knitr::rmarkdown}
+  %\VignetteEncoding{UTF-8}
+---
+
+```{r setup, include = FALSE}
+knitr::opts_chunk$set(
+  collapse   = TRUE,
+  comment    = "#>",
+  message    = FALSE,
+  warning    = FALSE,
+  fig.width  = 7,
+  fig.height = 5
+)
+```
+
+## What this vignette covers
+
+The censoring-aware regression tools in immunoPlex:
+
+- the model families and what each one estimates,
+- the input scale the fitters expect,
+- upper LODs, replicate and plate random effects,
+- comparing LOD-handling strategies with `compare_lod_models()`,
+- variance-homogeneity testing,
+- diagnostics.
+
+For the basic preprocess → fit → diagnose flow, see
+`vignette("getting-started")`.
+
+## Available families
+
+| Family | Implementation | Link | Estimand | Censoring handling |
+|---|---|---|---|---|
+| `gaussian`     | `glmmTMB` | identity | mean difference (log-scale) | substitute upstream (e.g. LOD/2) |
+| `gamma`        | `glmmTMB` | log      | ratio of means              | impute at LOD              |
+| `tobit`        | `survreg` | identity | ratio of means              | interval `[-∞, LOD]`       |
+| `aft`          | `survreg` | log      | ratio of medians            | interval `[ε, LOD]`        |
+| `tobit_censreg`| `censReg` | identity | ratio of means              | single LOD only            |
+| `auto`         | heuristic | varies   | varies                      | data-driven selection      |
+
+Every fitted model carries an `estimand` field, so you do not have to
+remember which family targets means and which targets medians.
+
+## The input scale
+
+All the fitters share one convention:
+
+- **`value`** is on the **log** scale (log concentration),
+- **`lod` / `ulod`** stay on the **raw** concentration scale.
+
+`fit_one()` relies on this. It builds Tobit censoring bounds as
+`log(LOD)` to match `value`, and the AFT family exponentiates `value`
+to return to raw concentrations. Data from `simulate_immunoassay()`
+and the `simulate_*` helpers already follows the convention
+(`value` is `log(value_raw)`).
+
+`prepare_cytokine_data()` returns `value` on the raw scale, so
+log-transform it yourself:
+
+```{r}
+library(immunoPlex)
+
+dat1 <- prepare_cytokine_data("IL-6")
+dat1$value <- log(dat1$value)
+```
+
+## Fitting a single family
+
+```{r}
+fit_tobit <- fit_one(
+  dat1,
+  family = "tobit",
+  fixed  = "timepoint*disease + age",
+  random = "",         # tobit / aft do not use random effects
+  ulod   = TRUE        # use upper-LOD information when present
+)
+
+summary(fit_tobit)
+```
+
+```{r tobit-censor-aware-plot, fig.cap = "Censor-aware residuals for the Tobit fit. Censored observations are plotted at their interval edges."}
+plot(fit_tobit, plot_type = "censor_aware", save_pdf = FALSE)
+```
+
+The `auto` selector picks a family from the censoring rate and
+skewness:
+
+```{r}
+fit <- fit_one(dat1, family = "auto")
+fit$family
+fit$estimand
+```
+
+Its thresholds are options:
+
+```{r eval = FALSE}
+options(
+  immunoplex.high_censoring_pct = 70,
+  immunoplex.high_skewness      = 2
+)
+```
+
+## Replicate and plate random effects
+
+Multiplex data often has duplicate wells per sample and runs across
+several plates. `rep_col` names replicates within a subject, and
+`plate_col` names a grouping that crosses subjects.
+
+`prepare_cytokine_data()` carries every metadata column through, so
+`replicate` is already available. We add a plate label for
+illustration:
+
+```{r}
+set.seed(1)
+dat1$plate <- sample(paste0("P", 1:4), nrow(dat1), replace = TRUE)
+
+fit_re <- fit_one(
+  dat1,
+  family    = "gaussian",     # tobit / aft ignore random effects
+  fixed     = "timepoint + disease + age",
+  random    = "(1|subject_id)",
+  rep_col   = "replicate",    # nested:  (1 | subject_id:replicate)
+  plate_col = "plate"         # crossed: (1 | plate)
+)
+fit_re$family
+fit_re$converged
+```
+
+`rep_col` is nested because the same replicate label on two different
+subjects does not mean the same physical replicate. `plate_col` is
+flat because plates cross subjects.
+
+Only the families that use `random` (`gamma`, `gaussian`) read these
+arguments; `tobit`, `aft` and `tobit_censreg` ignore them. For those,
+aggregate replicates first — see `vignette("replicate-qc")`.
+
+Random effects are dropped automatically when the data is too small to
+support them, which is configurable:
+
+```{r eval = FALSE}
+options(
+  fit_one.min_subjects = 30L,   # need >= 30 clusters to keep RE
+  fit_one.min_reps     = 3L     # and >= 3 rows per cluster
+)
+```
+
+## Comparing families
+
+```{r}
+models <- fit_models(
+  dat1,
+  families = c("gaussian", "tobit"),
+  ulod     = TRUE,
+  random   = ""
+)
+
+models$comparison[, c("family", "estimand", "aic", "bic", "delta_aic",
+                      "n_cens_lod", "n_cens_ulod")]
+```
+
+```{r model-comparison-plot, fig.cap = "AIC ranking for the fitted families."}
+plot(models, plot_type = "comparison", save_pdf = FALSE)
+```
+
+```{r best-residuals-plot, fig.cap = "Residual diagnostics for the best-AIC family in the comparison."}
+plot(models, plot_type = "best_residuals", save_pdf = FALSE)
+```
+
+AIC compares models fitted on the same response scale. `gaussian` and
+`tobit` both use `value`, so they rank directly. `aft` is fitted on raw
+concentrations, so its AIC is offset from the others by a constant and
+is not comparable with them.
+
+## Comparing LOD-handling strategies
+
+`compare_lod_models()` puts substitution-based preprocessing against
+censoring-aware models on the same data. This function takes `value`
+on the **raw** scale, because the substitution rules it tests are
+defined in raw units; it log-transforms internally where a family
+needs it.
+
+```{r}
+dat_raw <- prepare_cytokine_data("IL-6")   # raw scale, not logged
+
+cmp <- compare_lod_models(
+  dat_raw,
+  families              = c("gamma", "tobit"),
+  lod_methods           = c("half", "halfmin"),
+  include_log_transform = TRUE
+)
+cmp$comparison[, c("model", "family", "lod_method", "aic", "delta_aic")]
+```
+
+```{r lod-comparison-plot, fig.cap = "Substitution-based preprocessing versus censoring-aware models for the same cytokine."}
+plot(cmp, plot_best = TRUE)
+```
+
+## Variance-homogeneity testing
+
+For Gaussian fits you can model heterogeneous variance through
+`dispformula` and test it against a homogeneous baseline with a
+likelihood ratio test:
+
+```{r}
+cmp_var <- compare_variance_models(
+  data               = dat1,
+  fixed              = "timepoint + disease + age",
+  random             = "(1|subject_id)",
+  dispformula_hetero = ~timepoint
+)
+
+cmp_var$preferred_model
+cmp_var$comparison[, c("aic_homo", "aic_hetero", "lrt_statistic", "lrt_pvalue")]
+```
+
+## Diagnostics
+
+```{r}
+# DHARMa scaled residuals, for the glmmTMB families
+dharma_diagnostics(fit_re, n_sim = 200)$tests
+
+check_convergence(fit_re)$converged
+check_random_effects(fit_re)$icc
+```
+
+```{r}
+# Influential subjects, via leave-one-out
+sens <- leave_one_out_sensitivity(
+  data                = dat1,
+  fixed               = "timepoint + disease + age",
+  target_terms        = "timepointT2",
+  random              = "(1|subject_id)",
+  influence_threshold = 20,
+  progress            = FALSE
+)
+head(sens[order(-abs(sens$pct_change)), ], 3)
+```
+
+```{r}
+# Predictive performance for the best model in a set
+best_fit <- models$models[[models$best_family]]
+kfold_cv_metrics(best_fit, k = 5L)
+simulate_pi_coverage(best_fit, nsim = 100L, level = 0.95)
+```
+
+## See also
+
+- `vignette("getting-started")` — the workflow end to end
+- `vignette("rank-ancova")` — rank-based panel-wide screening
+- `vignette("replicate-qc")` — replicate handling and aggregation
+- `?fit_one`, `?fit_models`, `?compare_lod_models`,
+  `?compare_variance_models`

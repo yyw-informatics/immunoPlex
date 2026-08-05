@@ -1,0 +1,108 @@
+
+# immunoPlex
+
+**Version:** 0.1.0
+
+`immunoPlex` is an R package for statistical analysis of multiplex
+cytokine assays (Luminex, BioRad, MSD) with limit-of-detection (LOD)
+censoring. It provides censoring-aware regression, rank-based ANCOVA,
+paired detection analysis, multivariate pattern discovery, and a full
+simulation suite — with explicit estimand tracking throughout.
+
+## Features
+
+- **Censored regression** — Tobit, log-normal AFT, Gamma GLMM, Gaussian
+  glmmTMB; automatic family selection that avoids Gamma when censoring
+  is present
+- **Rank-based ANCOVA** — single-analyte and panel-wide (`ancova_one`,
+  `ancova_fit`) with IQR outlier removal, conditional covariates,
+  partial omega-squared effect sizes, and FDR correction
+- **Paired detection (McNemar)** — exact, mid-p, and
+  continuity-corrected tests via `exact2x2`, with alluvial plots of
+  detection-status flow
+- **Multivariate analysis** — PLS-DA / OPLS-DA via `ropls`, permutation
+  validation, VIP scores, sample-size-aware CV recommendation
+- **Replicate handling** — CV/MAD-based discordance flagging
+  (`flag_replicate_outliers`), aggregation rules
+  (`aggregate_replicates`), and replicate/plate random intercepts
+  (`rep_col`, `plate_col`) in modeling functions
+- **Simulation suite** — `simulate_immunoassay()` engine plus scenario
+  wrappers (vaccine trial, infection time-course, severity comparison,
+  exposure cohort) for benchmarking and sample-size planning
+- **Diagnostics** — DHARMa scaled residuals, convergence and random
+  effects checks, LOO subject sensitivity, k-fold predictive RMSE/MAE,
+  predictive interval coverage
+
+## Installation
+
+``` r
+# install.packages("remotes")
+remotes::install_github("yyw-informatics/immunoPlex")
+```
+
+PLS-DA needs `ropls`, which comes from Bioconductor:
+
+``` r
+# install.packages("BiocManager")
+BiocManager::install("ropls")
+```
+
+**Imports:** `DHARMa`, `dplyr`, `effectsize`, `exact2x2`, `ggalluvial`,
+`ggplot2`, `ggrepel`, `glmmTMB`, `magrittr`, `moments`, `patchwork`,
+`rlang`, `statmod`, `survival`, `tibble`, `tidyr`.
+
+**Suggests:** `ropls` (Bioconductor — required for PLS-DA), `censReg`,
+`devtools`, `ggsci`, `knitr`, `rmarkdown`, `testthat`.
+
+## Quick start
+
+``` r
+library(immunoPlex)
+
+data("immunoplex_example", package = "immunoPlex")
+
+dat <- immuno_preprocess(
+  expr        = immunoplex_example$expression,
+  meta        = immunoplex_example$metadata,
+  lod_lookup  = immunoplex_example$lod_lookup,
+  lod_methods = "half"
+)
+
+# Single-cytokine censored regression.
+# fit_one() expects `value` on the log scale; lod / ulod stay raw.
+dat1        <- prepare_cytokine_data("IL-6")
+dat1$value  <- log(dat1$value)
+
+fit    <- fit_one(dat1, family = "auto", random = "")
+models <- fit_models(dat1, families = c("gaussian", "tobit"),
+                     ulod = TRUE, random = "")
+print(models)
+```
+
+## Documentation
+
+For workflow-level walkthroughs, see the vignettes:
+
+``` r
+browseVignettes("immunoPlex")
+
+vignette("getting-started",      package = "immunoPlex")
+vignette("censored-regression",  package = "immunoPlex")
+vignette("rank-ancova",          package = "immunoPlex")
+vignette("mcnemar-detection-analysis", package = "immunoPlex")
+vignette("plsda-analysis",       package = "immunoPlex")
+vignette("replicate-qc",         package = "immunoPlex")
+```
+
+For function-level reference, see the help pages (`?fit_one`,
+`?ancova_fit`, `?mcnemar_detection`, `?plsda_fit`, …).
+
+## Citation
+
+``` r
+citation("immunoPlex")
+```
+
+## License
+
+MIT. See `LICENSE`.

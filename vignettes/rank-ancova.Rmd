@@ -1,0 +1,210 @@
+---
+title: "Rank-based ANCOVA for panel-wide cytokine screening"
+author: "immunoPlex package"
+date: "`r Sys.Date()`"
+output: rmarkdown::html_vignette
+vignette: >
+  %\VignetteIndexEntry{Rank-based ANCOVA for panel-wide cytokine screening}
+  %\VignetteEngine{knitr::rmarkdown}
+  %\VignetteEncoding{UTF-8}
+---
+
+```{r setup, include = FALSE}
+knitr::opts_chunk$set(
+  collapse   = TRUE,
+  comment    = "#>",
+  message    = FALSE,
+  warning    = FALSE,
+  fig.width  = 7,
+  fig.height = 5
+)
+```
+
+## What this vignette covers
+
+The rank-based ANCOVA module screens a whole panel with one recipe:
+a group effect adjusted for a covariate, an effect size per analyte,
+and FDR correction across analytes. We cover:
+
+- single-analyte fitting with `ancova_one()`,
+- panel-wide iteration with `ancova_fit()`,
+- replicate and plate random intercepts,
+- conditional covariate selection,
+- tuning the defaults.
+
+## Prepare the data
+
+```{r}
+library(immunoPlex)
+
+data("immunoplex_example", package = "immunoPlex")
+
+dat_raw <- immuno_preprocess(
+  expr       = immunoplex_example$expression,
+  meta       = immunoplex_example$metadata,
+  lod_lookup = immunoplex_example$lod_lookup
+)
+```
+
+`ancova_one()` and `ancova_fit()` fit a linear model that treats each
+row as one independent observation. The example data has two
+timepoints and two replicate wells per subject, so we reduce it to one
+row per subject and analyte first. Here `disease` and `age` are fixed
+subject characteristics, so we take a single timepoint and average the
+wells:
+
+```{r}
+dat_t1 <- subset(dat_raw, timepoint == "T1")
+
+agg <- aggregate_replicates(
+  dat_t1,
+  rep_col      = "replicate",
+  subject_col  = "subject_id",
+  cytokine_col = "cytokine",
+  value_col    = "concentration",
+  rule         = "mean"
+)
+
+# aggregate_replicates() returns the grouping keys and the value only,
+# so join the subject-level metadata back on
+subject_meta <- unique(dat_t1[, c("subject_id", "disease", "age", "preexist")])
+dat_long     <- merge(agg, subject_meta, by = "subject_id")
+
+c(rows = nrow(dat_long), subjects = length(unique(dat_long$subject_id)))
+```
+
+To keep the replicate rows instead, pass `rep_col` — see "Replicate
+and plate structure" below.
+
+## Single analyte: `ancova_one()`
+
+```{r}
+dat_one <- subset(dat_long, cytokine == "IL-6")
+
+fit <- ancova_one(
+  data            = dat_one,
+  outcome         = "concentration",
+  group           = "disease",
+  covariate       = "age",       # rank-transformed internally
+  outlier_removal = TRUE,        # IQR fence on outcome + covariate
+  iqr_multiplier  = 3,
+  conf_level      = 0.95,
+  log_validate    = TRUE         # also fit a log-scale validation model
+)
+
+print(fit)
+```
+
+```{r ancova-one-plot, fig.cap = "Rank-based ANCOVA diagnostics for one cytokine: residuals-versus-fitted and quantile-quantile plots."}
+plot(fit)
+```
+
+What the engine does, in order:
+
+1. apply IQR outlier removal on `outcome` and `covariate`,
+2. drop binary `conditional_covariates` below `prevalence_threshold`,
+3. rank-transform `outcome` and `covariate`,
+4. fit `lm(rank(outcome) ~ rank(covariate) + group + covariates)`,
+5. compute partial omega-squared effect sizes per term,
+6. optionally fit a log-scale model and report concordance with the
+   rank-based fit.
+
+## Panel-wide: `ancova_fit()`
+
+```{r}
+result <- ancova_fit(
+  data          = dat_long,
+  outcome       = "concentration",
+  group         = "disease",
+  covariate     = "age",
+  analyte_col   = "cytokine",
+  fdr_method    = "BH",
+  fdr_threshold = 0.05,
+  quiet         = TRUE
+)
+
+result$n_analytes        # total fitted
+result$n_significant     # below fdr_threshold
+head(result$results[, c("analyte", "n_obs", "omega_sq_partial",
+                        "group_p", "q_value")], 5)
+```
+
+```{r ancova-set-plot, fig.cap = "Panel-wide summary: per-analyte effect sizes (partial omega-squared) with significance flags."}
+plot(result)
+```
+
+The result is an `immuno_ancova_set`. The per-analyte `immuno_ancova`
+objects are kept under `$models`, so you can drill into any cytokine:
+
+```{r ancova-drilldown-plot, fig.cap = "Diagnostics for a single cytokine pulled from the panel-wide result."}
+plot(result$models[["IFN-g"]])
+```
+
+## Replicate and plate structure
+
+Pass `rep_col`, `plate_col`, or both, using the un-aggregated data:
+
+```{r eval = FALSE}
+set.seed(1)
+dat_t1$plate <- sample(paste0("P", 1:4), nrow(dat_t1), replace = TRUE)
+
+result_re <- ancova_fit(
+  data      = dat_t1,          # replicate-level rows
+  outcome   = "concentration",
+  group     = "disease",
+  covariate = "age",
+  rep_col   = "replicate",     # nested: (1 | subject_id:replicate)
+  plate_col = "plate"          # crossed: (1 | plate)
+)
+```
+
+Both columns must already exist in the data — `ancova_fit()` stops
+with an error if either name is missing. The example data has no plate
+layout, so the plate column above is synthesized for illustration.
+
+With `rep_col` or `plate_col` set, each per-analyte fit switches from
+`lm()` to `glmmTMB::glmmTMB()` (Gaussian) with the matching random
+structure. For k-level groups the omnibus test becomes a likelihood
+ratio test rather than the Type-I F, so `omnibus_f` is `NA` and
+`omnibus_p` carries the LRT p-value.
+
+## Conditional covariate selection
+
+Binary covariates that are rare in the data — a comorbidity present in
+one or two subjects, say — can be dropped automatically:
+
+```{r}
+covars <- choose_covariates(
+  data           = dat_long,
+  base_covars    = c("disease", "age"),
+  candidates     = c("preexist"),
+  rare_threshold = 0.03
+)
+covars
+```
+
+`ancova_one()` and `ancova_fit()` apply this rule internally through
+their `conditional_covariates` argument. You can also call
+`choose_covariates()` directly when building your own formula.
+
+## Tuning the defaults
+
+The ANCOVA defaults are exposed as options:
+
+```{r eval = FALSE}
+options(
+  immunoplex.ancova_iqr_multiplier       = 3,
+  immunoplex.ancova_min_n                = 12L,
+  immunoplex.ancova_fdr_method           = "BH",
+  immunoplex.ancova_fdr_threshold        = 0.05,
+  immunoplex.ancova_prevalence_threshold = 0.03
+)
+get_immunoplex_config()$ancova
+```
+
+## See also
+
+- `vignette("getting-started")` — the workflow end to end
+- `vignette("censored-regression")` — parametric single-analyte models
+- `vignette("replicate-qc")` — replicate handling
+- `?ancova_one`, `?ancova_fit`, `?choose_covariates`

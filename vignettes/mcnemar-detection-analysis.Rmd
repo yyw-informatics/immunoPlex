@@ -1,0 +1,198 @@
+---
+title: "Paired detection-frequency analysis with McNemar's test"
+author: "immunoPlex package"
+date: "`r Sys.Date()`"
+output: rmarkdown::html_vignette
+vignette: >
+  %\VignetteIndexEntry{Paired detection-frequency analysis with McNemar's test}
+  %\VignetteEngine{knitr::rmarkdown}
+  %\VignetteEncoding{UTF-8}
+---
+
+```{r setup, include = FALSE}
+knitr::opts_chunk$set(
+  collapse   = TRUE,
+  comment    = "#>",
+  message    = FALSE,
+  warning    = FALSE,
+  fig.width  = 7,
+  fig.height = 5
+)
+```
+
+## What this vignette covers
+
+`mcnemar_detection()` answers a paired question about *detection*
+rather than magnitude: did the proportion of samples above the LOD
+change between two timepoints? We cover:
+
+- the basic call and its output,
+- the test variants,
+- replicate aggregation,
+- alluvial plots of detection flow.
+
+## Setup
+
+`simulate_mcnemar_data()` generates a paired dataset:
+
+```{r}
+library(immunoPlex)
+
+mc <- simulate_mcnemar_data(
+  n_subjects         = 80,
+  n_analytes         = 10,
+  baseline_detection = 0.4,    # 40% detected at T1
+  discordant_rate    = 0.20,   # 20% of subjects change status
+  seed               = 1
+)
+
+dat <- mc$data
+head(dat[, c("subject_id", "timepoint", "cytokine", "cens_lod")])
+```
+
+The simulated data carries `cens_lod` (TRUE = below LOD). Data from
+`immuno_preprocess()` has the same information in a column named
+`censored`, so point `censoring_col` at whichever name your data uses.
+
+## The basic call
+
+```{r}
+res <- mcnemar_detection(
+  data          = dat,
+  subject_col   = "subject_id",
+  cytokine_col  = "cytokine",
+  timepoint_col = "timepoint",
+  censoring_col = "cens_lod",      # detected = !censored
+  baseline      = "T1",
+  comparison    = "T2",
+  method        = "exact",         # or "midp", "noCC"
+  fdr_method    = "BH",
+  quiet         = TRUE
+)
+
+print(res)
+```
+
+```{r}
+head(res[, c("cytokine", "n_pairs",
+             "delta_detection", "delta_ci_lo", "delta_ci_hi",
+             "mpor", "p_mcnemar", "q_mcnemar")])
+```
+
+### What the output holds
+
+For each cytokine:
+
+- **`delta_detection`** — the percentage-point change in detection,
+  with an exact interval in `delta_ci_lo` / `delta_ci_hi`,
+- **`mpor`** — matched-pair odds ratio, with its own interval,
+- **`rate_upward`** / **`rate_downward`** — transition rates with
+  exact intervals,
+- **`p_mcnemar`** — p-value from the chosen variant,
+- **`q_mcnemar`** — FDR-adjusted across analytes,
+- **`cohen_kappa`**, **`detection_pattern`** — supplementary.
+
+## Test variants
+
+```{r eval = FALSE}
+# Exact McNemar (default, via exact2x2)
+mcnemar_detection(dat, censoring_col = "cens_lod",
+                  baseline = "T1", comparison = "T2",
+                  method = "exact")
+
+# Mid-p
+mcnemar_detection(dat, censoring_col = "cens_lod",
+                  baseline = "T1", comparison = "T2",
+                  method = "midp")
+
+# No continuity correction, asymptotic Wald interval
+mcnemar_detection(dat, censoring_col = "cens_lod",
+                  baseline = "T1", comparison = "T2",
+                  method = "noCC")
+```
+
+## Replicate aggregation
+
+When the data has technical replicates per (subject, timepoint),
+`mcnemar_detection()` collapses them to one boolean per pair using
+`replicate_agg`:
+
+```{r eval = FALSE}
+mcnemar_detection(
+  data          = replicated_data,
+  censoring_col = "cens_lod",
+  baseline      = "T1",
+  comparison    = "T2",
+  replicate_agg = "majority_vote"   # or "any_detected", "all_detected"
+)
+```
+
+`aggregate_replicates()` exposes the same rules if you would rather
+collapse upstream — see `vignette("replicate-qc")`.
+
+## Custom column names
+
+```{r eval = FALSE}
+res <- mcnemar_detection(
+  data          = my_data,
+  subject_col   = "patient_id",
+  cytokine_col  = "marker",
+  timepoint_col = "visit",
+  baseline      = "Visit1",
+  comparison    = "Visit2",
+  conf_level    = 0.99
+)
+```
+
+## Alluvial plots
+
+An alluvial diagram shows how subjects move between detected and
+undetected across the two timepoints:
+
+```{r alluvial-single, fig.cap = "Alluvial plot for the most significant cytokine. Each ribbon is a group of subjects following one detection trajectory; ribbon width is proportional to how many."}
+plot_mcnemar_alluvial(res)
+```
+
+```{r alluvial-grid, fig.cap = "Faceted alluvial plot for the top four cytokines.", fig.height = 6}
+plot_mcnemar_alluvial_grid(
+  res,
+  n_cytokines = 4,
+  sort_by     = "significance",   # or "delta_abs", "delta"
+  ncol        = 2
+)
+```
+
+The left bar is detection status at baseline and the right bar at
+comparison; flow colour shows the direction of change, and the title
+carries the cytokine name and its delta. Both functions take
+`baseline_label` and `comparison_label` for the axis names.
+
+## Building a results table
+
+```{r eval = FALSE}
+library(dplyr)
+
+table <- res |>
+  filter(q_mcnemar < 0.05) |>
+  mutate(
+    delta_fmt = sprintf("%+.1f [%.1f, %.1f]",
+                        delta_detection, delta_ci_lo, delta_ci_hi),
+    mpor_fmt  = sprintf("%.2f [%.2f, %.2f]",
+                        mpor, mpor_ci_lo, mpor_ci_hi)
+  ) |>
+  select(cytokine, n_pairs, delta_fmt, mpor_fmt, q_mcnemar)
+```
+
+## See also
+
+- `vignette("getting-started")` — the workflow end to end
+- `vignette("censored-regression")` — quantitative paired analysis
+- `vignette("replicate-qc")` — replicate aggregation rules
+- `?mcnemar_detection`, `?plot_mcnemar_alluvial`,
+  `?plot_mcnemar_alluvial_grid`
+
+## References
+
+- Fay, M. P., & Lumbard, K. (2021). Confidence intervals for difference
+  in proportions for matched pairs compatible with exact McNemar's or
+  sign tests. *Statistics in Medicine*, 40(5), 1147–1159.

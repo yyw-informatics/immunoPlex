@@ -1,0 +1,187 @@
+---
+title: "Getting started with immunoPlex"
+author: "immunoPlex package"
+date: "`r Sys.Date()`"
+output: rmarkdown::html_vignette
+vignette: >
+  %\VignetteIndexEntry{Getting started with immunoPlex}
+  %\VignetteEngine{knitr::rmarkdown}
+  %\VignetteEncoding{UTF-8}
+---
+
+```{r setup, include = FALSE}
+knitr::opts_chunk$set(
+  collapse   = TRUE,
+  comment    = "#>",
+  message    = FALSE,
+  warning    = FALSE,
+  fig.width  = 7,
+  fig.height = 5
+)
+```
+
+## What this vignette covers
+
+A short end-to-end tour of the modeling workflow:
+
+1. shape raw multiplex data into the long format used downstream,
+2. fit a censoring-aware model for one cytokine,
+3. compare model families,
+4. run diagnostics.
+
+Other vignettes cover the topic-specific tools:
+
+- `vignette("censored-regression")` — the model families in detail
+- `vignette("rank-ancova")` — panel-wide screening with FDR
+- `vignette("mcnemar-detection-analysis")` — paired detection frequency
+- `vignette("plsda-analysis")` — PLS-DA / OPLS-DA
+- `vignette("replicate-qc")` — replicate QC and aggregation
+
+## Setup
+
+```{r}
+library(immunoPlex)
+
+data("immunoplex_example", package = "immunoPlex")
+str(immunoplex_example, max.level = 1)
+```
+
+The bundled example is a 20-analyte panel on 120 subjects, measured at
+two timepoints in duplicate wells. `list_cytokines()` summarises the
+panel:
+
+```{r}
+head(list_cytokines(), 5)
+```
+
+## 1. Preprocess
+
+`immuno_preprocess()` joins the expression matrix to the metadata,
+attaches per-analyte LOD / ULOD thresholds, and returns long data with
+one row per (sample, cytokine).
+
+```{r}
+dat <- immuno_preprocess(
+  expr        = immunoplex_example$expression,
+  meta        = immunoplex_example$metadata,
+  lod_lookup  = immunoplex_example$lod_lookup,
+  lod_methods = "half"
+)
+
+head(dat)
+```
+
+`lod_methods` sets what replaces a below-LOD reading in the
+`concentration` column — `"half"` (the default) uses LOD/2, and
+`"none"` keeps the raw value. The separate `censored` column always
+records which rows were below the LOD.
+
+## 2. Fit one model
+
+`prepare_cytokine_data()` pulls a single analyte out of the example
+data and builds the columns `fit_one()` expects — `value`, `cens_lod`
+and `cens_ulod`:
+
+```{r}
+dat1 <- prepare_cytokine_data("IL-6")
+head(dat1)
+```
+
+`fit_one()` expects `value` on the log scale, so transform it first
+(`lod` and `ulod` stay on the raw scale):
+
+```{r}
+dat1$value <- log(dat1$value)
+```
+
+Now fit. `family = "auto"` picks a family from the censoring rate and
+skewness of the data:
+
+```{r}
+fit <- fit_one(
+  dat1,
+  family = "auto",
+  fixed  = "timepoint*disease + age",
+  random = "(1|subject_id)"
+)
+
+fit$family      # the family that was chosen
+fit$estimand    # what the coefficients mean
+summary(fit)
+```
+
+```{r censor-aware-plot, fig.cap = "Censor-aware diagnostic plot. Censored observations are highlighted to show how they enter the likelihood."}
+plot(fit, plot_type = "censor_aware", save_pdf = FALSE)
+```
+
+## 3. Compare model families
+
+`fit_models()` runs `fit_one()` over several families and returns a
+comparison table:
+
+```{r}
+models <- fit_models(
+  dat1,
+  families = c("gaussian", "tobit"),
+  ulod     = TRUE,
+  random   = ""
+)
+
+models$comparison[, c("family", "estimand", "aic", "delta_aic")]
+```
+
+```{r model-comparison-plot, fig.cap = "AIC ranking across the fitted families."}
+plot(models, plot_type = "comparison", save_pdf = FALSE)
+```
+
+```{r best-residuals-plot, fig.cap = "Residual diagnostics for the best-AIC model in the set."}
+plot(models, plot_type = "best_residuals", save_pdf = FALSE)
+```
+
+Both families here are fit on `value`, so their AIC values sit on the
+same scale. `aft` is also available; it is fit on raw concentrations,
+so compare it with the others by estimand rather than by AIC.
+
+## 4. Diagnostics
+
+DHARMa residuals and the convergence checks work on the `glmmTMB`
+families (`gaussian`, `gamma`):
+
+```{r}
+fit_g <- fit_one(
+  dat1,
+  family = "gaussian",
+  fixed  = "timepoint + disease + age",
+  random = "(1|subject_id)"
+)
+
+diag <- dharma_diagnostics(fit_g, n_sim = 200)
+diag$passed_all
+
+check_convergence(fit_g)$converged
+check_random_effects(fit_g)$icc
+```
+
+Influence and predictive checks work on any `immuno_fit`:
+
+```{r}
+sens <- leave_one_out_sensitivity(
+  data         = dat1,
+  fixed        = "timepoint + disease + age",
+  target_terms = "timepointT2",
+  random       = "(1|subject_id)",
+  progress     = FALSE
+)
+head(sens[order(-abs(sens$pct_change)), ], 3)
+
+kfold_cv_metrics(fit, k = 5L)
+```
+
+## Where to go next
+
+- One cytokine, censoring in depth → `vignette("censored-regression")`
+- Whole panel with FDR → `vignette("rank-ancova")`
+- Detection frequency between timepoints →
+  `vignette("mcnemar-detection-analysis")`
+- Multivariate signatures → `vignette("plsda-analysis")`
+- Duplicate wells and plates → `vignette("replicate-qc")`

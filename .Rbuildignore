@@ -1,0 +1,58 @@
+^archived$
+^tools$
+^\.vscode$
+^\.lintr$
+^\.here$
+^analyses/$
+^doc$
+^Meta$
+^README\.Rmd$
+^README\.html$
+^.*\.Rproj$
+^\.Rproj\.user$
+^PLSDA_FIXES_SUMMARY\.md$
+
+# The whole Monte Carlo benchmark suite. It is validation and development
+# material, not package function: nothing in R/ loads it, and anything under
+# inst/ is copied verbatim into the user's library on install. The scripts stay
+# in the git repository so the validation remains reproducible from GitHub, but
+# an installed copy of the package should contain only the package.
+#
+# Leaving it in is also a size trap. R CMD INSTALL run against a source
+# directory ignores this file, so a local install picks up cache/ as well —
+# 1.9 GB against the 1.4 MB the package itself needs.
+^inst/simulations$
+
+# Local development scaffolding, not part of the package. These are already
+# excluded from git, so they never reach GitHub; these entries stop R CMD build
+# picking them up from a working tree. CLAUDE.md has to stay at the repo root
+# to do its job, so it is ignored rather than moved.
+^\.claude$
+^\.codex$
+^\.git-hooks$
+^CLAUDE\.md$
+^outputs$
+^plans$
+^data-raw$
+^manuscript_review$
+
+# Rendered vignette HTML kept in vignettes/ for local preview. R CMD build
+# regenerates these into inst/doc, so shipping the checked-in copies would
+# double 1.4 MB of output into the tarball.
+^vignettes/.*\.html$
+
+# Test by-products regenerated on every run, not package content. The stray
+# PDF also triggers the "qpdf is needed for checks on size reduction of PDFs"
+# warning on machines without qpdf installed. _problems/ holds saved failing
+# cases written by testthat when a test errors.
+^tests/testthat/model_comparison\.pdf$
+^tests/testthat/testthat-problems\.rds$
+^tests/testthat/_problems$
+
+# Stray plot device output. Any headless run that draws without opening a
+# device leaves this at the repo root; it is never package content.
+^Rplots\.pdf$
+
+# Full MIT text for GitHub. The tarball carries the DCF stub in LICENSE, which
+# is what "MIT + file LICENSE" expects; R supplies the license body itself.
+^LICENSE\.md$

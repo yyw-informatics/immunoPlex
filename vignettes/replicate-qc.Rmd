@@ -1,0 +1,252 @@
+---
+title: "Replicate QC and aggregation"
+author: "immunoPlex package"
+date: "`r Sys.Date()`"
+output: rmarkdown::html_vignette
+vignette: >
+  %\VignetteIndexEntry{Replicate QC and aggregation}
+  %\VignetteEngine{knitr::rmarkdown}
+  %\VignetteEncoding{UTF-8}
+---
+
+```{r setup, include = FALSE}
+knitr::opts_chunk$set(
+  collapse   = TRUE,
+  comment    = "#>",
+  message    = FALSE,
+  warning    = FALSE,
+  fig.width  = 7,
+  fig.height = 5
+)
+```
+
+## What this vignette covers
+
+Multiplex assays (Luminex, BioRad, MSD) usually run each biological
+sample in duplicate or triplicate wells, sometimes across several
+plates. immunoPlex provides two tools for that:
+
+- **`flag_replicate_outliers()`** — flag, or drop, discordant
+  replicate pairs using CV and MAD criteria, with optional whole-well
+  failure detection,
+- **`aggregate_replicates()`** — collapse replicates to one row per
+  (subject, cytokine, timepoint).
+
+## Which downstream methods need aggregation
+
+| Downstream method | Replicates |
+|---|---|
+| `fit_one`, `fit_models` (Gamma / Gaussian) | keep them; pass `rep_col` |
+| `fit_one`, `fit_models` (Tobit / AFT)      | aggregate first — these fitters do not use random effects |
+| `ancova_one`, `ancova_fit`                 | either — pass `rep_col`, or aggregate first |
+| `mcnemar_detection`                        | handled internally through `replicate_agg` |
+| `plsda_fit`                                | aggregate — `plsda_preprocess(replicate_col=)` or `plsda_fit(rep_col=)` |
+
+## Setup
+
+```{r}
+library(immunoPlex)
+
+data("immunoplex_example", package = "immunoPlex")
+
+dat_long <- immuno_preprocess(
+  expr        = immunoplex_example$expression,
+  meta        = immunoplex_example$metadata,
+  lod_lookup  = immunoplex_example$lod_lookup,
+  lod_methods = "none"    # keep raw values so the CV reflects the wells
+)
+```
+
+`sample_id_col` names the unit whose wells are replicates of one
+another. In this dataset that is a subject **at one timepoint**, so we
+build a key for it — passing `subject_id` alone would treat T1 and T2
+as four replicates of the same sample:
+
+```{r}
+dat_long$bio_sample <- paste(dat_long$subject_id, dat_long$timepoint,
+                             sep = "_")
+
+table(dat_long$replicate)
+```
+
+## Flagging discordant pairs
+
+```{r}
+flagged <- flag_replicate_outliers(
+  data             = dat_long,
+  sample_id_col    = "bio_sample",     # subject x timepoint
+  replicate_id_col = "sample_id",      # unique well ID
+  cytokine_col     = "cytokine",
+  value_col        = "concentration",
+  group_cols       = "timepoint",      # population used for the MAD reference
+  cv_threshold     = 25,               # typical Luminex QC: 15-25%
+  mad_threshold    = 3,
+  flag_rule        = "either",         # "cv" | "mad" | "either" | "both"
+  action           = "flag",           # annotate only
+  verbose          = FALSE
+)
+
+mean(flagged$replicate_discordant, na.rm = TRUE)   # fraction flagged
+```
+
+```{r cv-distribution-plot, fig.cap = "Within-pair coefficient of variation across all (sample, cytokine) replicate groups. The dashed line marks cv_threshold = 25%."}
+library(ggplot2)
+ggplot(unique(flagged[, c("bio_sample", "cytokine", "replicate_cv")]),
+       aes(x = replicate_cv)) +
+  geom_histogram(bins = 60, fill = "steelblue", alpha = 0.85) +
+  geom_vline(xintercept = 25, linetype = "dashed", color = "firebrick") +
+  coord_cartesian(xlim = c(0, 200)) +
+  labs(x = "Within-pair CV (%)", y = "Number of replicate groups") +
+  theme_minimal()
+```
+
+### The rules
+
+- **CV** (`flag_rule = "cv"`) — flag pairs whose within-pair
+  coefficient of variation exceeds `cv_threshold`.
+- **MAD** (`"mad"`) — flag pairs whose within-pair absolute difference
+  exceeds `mad_threshold ×` the MAD of all within-pair differences for
+  that analyte, within `group_cols` if given.
+- **`"either"`** flags when either rule fires; **`"both"`** only when
+  both do.
+
+### The actions
+
+- `"flag"` — annotate only, drop nothing.
+- `"drop_both"` — remove both replicates of a flagged pair.
+- `"drop_farther"` — keep the replicate closer to the analyte's
+  population median, remove the other.
+- `"winsorize"` — pull the farther value toward the closer one.
+
+## Whole-well failure detection
+
+With `well_detection = "sample"` the function also flags entire wells
+that fail across many analytes, rather than individual analyte pairs:
+
+```{r eval = FALSE}
+flagged <- flag_replicate_outliers(
+  data             = dat_long,
+  sample_id_col    = "bio_sample",
+  replicate_id_col = "sample_id",
+  cytokine_col     = "cytokine",
+  value_col        = "concentration",
+  lod_col          = "lod",
+  well_detection   = "sample",
+  well_params      = list(
+    well_threshold         = 0.3,   # >= 30% of analytes flagged -> well failure
+    sign_bias_threshold    = 0.7,   # directional if |mean(sign(z))| above this
+    lod_fraction_threshold = 0.5,   # >= 50% at the LOD -> dropout failure
+    score_ratio_threshold  = 1.5
+  )
+)
+```
+
+This adds the columns `well_failure`, `well_failure_type`,
+`well_score`, `well_sign_bias` and `well_lod_fraction`.
+
+## Aggregating replicates
+
+```{r}
+agg <- aggregate_replicates(
+  data          = dat_long,
+  rep_col       = "replicate",
+  subject_col   = "subject_id",
+  cytokine_col  = "cytokine",
+  timepoint_col = "timepoint",
+  value_col     = "concentration",
+  rule          = "mean",
+  keep_sd       = TRUE
+)
+
+head(agg)
+```
+
+The result holds the grouping keys and the aggregated value. Metadata
+columns such as `disease` or `age` are not carried through, so join
+them back from a subject-level table when you need them:
+
+```{r}
+subject_meta <- unique(dat_long[, c("subject_id", "disease", "age")])
+agg_full     <- merge(agg, subject_meta, by = "subject_id")
+names(agg_full)
+```
+
+Detection status aggregates with the same rules `mcnemar_detection()`
+uses:
+
+```{r}
+agg_det <- aggregate_replicates(
+  data          = dat_long,
+  rep_col       = "replicate",
+  subject_col   = "subject_id",
+  cytokine_col  = "cytokine",
+  timepoint_col = "timepoint",
+  censoring_col = "censored",       # TRUE = below LOD
+  rule          = "majority_vote"   # or "any_detected", "all_detected"
+)
+
+table(agg_det$censored)
+```
+
+### The rules
+
+- **Continuous** — `"mean"` (default), `"geomean"` (needs strictly
+  positive values), `"median"`.
+- **Boolean** — `"majority_vote"` sends 50/50 ties to `FALSE` through
+  banker's rounding; `"any_detected"` calls a sample detected if any
+  well saw it; `"all_detected"` requires every well to agree.
+
+Edge cases: a single observation per group makes all rules the
+identity; fully missing groups return `NA`, including for
+`"all_detected"`; and `"geomean"` returns `NA` with a warning if any
+replicate is not positive.
+
+## A typical pipeline
+
+```{r eval = FALSE}
+# 1. QC the wells
+clean <- flag_replicate_outliers(
+  dat_long,
+  sample_id_col = "bio_sample", replicate_id_col = "sample_id",
+  cytokine_col  = "cytokine",   value_col = "concentration",
+  flag_rule = "either", action = "drop_farther"
+)
+
+# 2a. Into PLS-DA or McNemar: aggregate
+agg <- aggregate_replicates(
+  clean, rep_col = "replicate",
+  subject_col = "subject_id", cytokine_col = "cytokine",
+  timepoint_col = "timepoint",
+  value_col = "concentration", rule = "geomean"
+)
+
+# 2b. Into ancova_fit: keep replicates, pass rep_col
+res <- ancova_fit(clean, outcome = "concentration", group = "disease",
+                  covariate = "age", analyte_col = "cytokine",
+                  rep_col = "replicate")
+
+# 2c. Into fit_one: one cytokine, renamed to the columns it expects
+one <- subset(clean, cytokine == "IL-6")
+one$value     <- log(one$concentration)
+one$cens_lod  <- one$censored
+one$cens_ulod <- !is.na(one$ulod) & one$concentration > one$ulod
+
+fit <- fit_one(one, family = "gaussian",
+               fixed = "timepoint + disease + age",
+               random = "(1|subject_id)",
+               rep_col = "replicate")
+```
+
+Step 2c is the bridge between the two halves of the package.
+`immuno_preprocess()` gives panel-wide long data with a
+`concentration` column, while `fit_one()` fits one analyte and expects
+`value` on the log scale plus `cens_lod` / `cens_ulod`. See
+`vignette("censored-regression")` for that convention.
+
+## See also
+
+- `vignette("getting-started")` — the workflow end to end
+- `vignette("censored-regression")` — random effects in parametric fits
+- `vignette("rank-ancova")` — random effects in `ancova_*`
+- `vignette("mcnemar-detection-analysis")` — boolean replicate rules
+- `?flag_replicate_outliers`, `?aggregate_replicates`

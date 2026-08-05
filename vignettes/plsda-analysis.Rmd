@@ -1,0 +1,244 @@
+---
+title: "PLS-DA / OPLS-DA pattern discovery"
+author: "immunoPlex package"
+date: "`r Sys.Date()`"
+output: rmarkdown::html_vignette
+vignette: >
+  %\VignetteIndexEntry{PLS-DA / OPLS-DA pattern discovery}
+  %\VignetteEngine{knitr::rmarkdown}
+  %\VignetteEncoding{UTF-8}
+---
+
+```{r setup, include = FALSE}
+knitr::opts_chunk$set(
+  collapse   = TRUE,
+  comment    = "#>",
+  message    = FALSE,
+  warning    = FALSE,
+  fig.width  = 7,
+  fig.height = 5
+)
+ropls_available <- requireNamespace("ropls", quietly = TRUE)
+knitr::opts_chunk$set(eval = ropls_available)
+```
+
+## What this vignette covers
+
+Supervised multivariate pattern discovery: PLS-DA and its orthogonal
+variant OPLS-DA, with permutation testing and cross-validation. We
+cover:
+
+- preprocessing a wide matrix,
+- fitting and validating a model,
+- choosing a cross-validation scheme,
+- the four plot helpers,
+- switching to OPLS-DA.
+
+## Setup
+
+PLS-DA wraps the
+[`ropls`](https://bioconductor.org/packages/ropls/) Bioconductor
+package. Install it once:
+
+```{r eval = FALSE}
+if (!requireNamespace("BiocManager", quietly = TRUE))
+  install.packages("BiocManager")
+BiocManager::install("ropls")
+```
+
+```{r}
+library(immunoPlex)
+
+data("immunoplex_example", package = "immunoPlex")
+```
+
+## 1. Preprocess
+
+`plsda_preprocess()` takes a **wide** data frame — one row per sample,
+one column per cytokine — plus a per-analyte LOD lookup. It applies
+LOD substitution, optional log transformation and optional scaling,
+and returns a `plsda_preprocessed` object.
+
+This is a separate entry point from `immuno_preprocess()`, not a step
+after it: it wants the raw wide matrix and applies its own LOD rule.
+Here we build one from the example data at a single timepoint:
+
+```{r}
+expr <- immunoplex_example$expression
+meta <- immunoplex_example$metadata
+cytokines <- names(expr)
+
+wide <- cbind(sample_id = rownames(expr),
+              as.data.frame(expr, check.names = FALSE))
+wide <- merge(wide, meta, by = "sample_id")
+wide <- subset(wide, timepoint == "T1")
+
+c(rows = nrow(wide), subjects = length(unique(wide$subject_id)))
+```
+
+Each subject appears twice, once per replicate well, and PLS-DA needs
+one row per sample. `replicate_col` names the column that **groups**
+replicates together — the biological sample ID:
+
+```{r}
+preprocessed <- plsda_preprocess(
+  data          = wide,
+  cytokine_cols = cytokines,
+  metadata_cols = c("subject_id", "disease", "age"),
+  lod_lookup    = immunoplex_example$lod_lookup,
+  lod_method    = "half",        # also "halfmin", "sqrt", "lod", "zero"
+  log_transform = TRUE,
+  scale_data    = TRUE,
+  replicate_col = "subject_id",  # average the wells per subject
+  verbose       = FALSE
+)
+
+dim(preprocessed$expression)
+```
+
+`plsda_fit()` has a `rep_col` argument that collapses replicates too,
+but it names the opposite thing — the column that *distinguishes*
+replicates (`replicate`) — and it runs after scaling rather than
+before.
+
+For one-step transforms, `transform` overrides `log_transform` and
+`scale_data`:
+
+```{r eval = FALSE}
+preprocessed <- plsda_preprocess(
+  data          = wide,
+  cytokine_cols = cytokines,
+  metadata_cols = c("subject_id", "disease"),
+  lod_lookup    = immunoplex_example$lod_lookup,
+  replicate_col = "subject_id",
+  transform     = "log2p1_zscore"   # or "cuberoot_zscore", "pareto"
+)
+```
+
+## 2. Fit a model
+
+```{r}
+model <- plsda_fit(
+  preprocessed_data = preprocessed,
+  response_var      = "disease",
+  n_components      = 2,
+  method            = "PLS-DA",   # or "OPLS-DA"
+  permutations      = 200,        # 0 to skip permutation testing
+  cross_validation  = NULL,       # NULL -> auto, see below
+  verbose           = FALSE
+)
+
+model$model_stats[, c("R2X(cum)", "R2Y(cum)", "Q2(cum)",
+                      "perm_pval_R2Y", "perm_pval_Q2")]
+```
+
+The fitted object carries `R2X` and `R2Y` (variance explained), `Q2`
+(cross-validated predictive performance), the permutation p-values,
+and per-cytokine VIP scores in `model$vip_scores`.
+
+## 3. Cross-validation
+
+`recommend_cv_method()` reports the scheme that `plsda_fit()` picks
+for a given sample size:
+
+```{r}
+recommend_cv_method(n_total = 75, n_min_group = 20, verbose = TRUE)
+```
+
+The defaults, all adjustable through the `*_threshold` and `*_k`
+arguments to both functions:
+
+| Sample size | Method |
+|---|---|
+| `n_total < 50` **or** `n_min_group < 15`     | LOOCV   |
+| `50 <= n_total < 100` and all groups >= 15   | 7-fold  |
+| `n_total >= 100` and all groups >= 15        | 10-fold |
+
+Override it directly when you want to:
+
+```{r eval = FALSE}
+plsda_fit(preprocessed, response_var = "disease",
+          cross_validation = "loocv")
+
+plsda_fit(preprocessed, response_var = "disease",
+          cross_validation = 7L)
+
+plsda_fit(preprocessed, response_var = "disease",
+          loocv_n_threshold     = 75,
+          loocv_group_threshold = 20)
+```
+
+## 4. Visualise
+
+Four helpers, each returning a ggplot object:
+
+```{r pls-scores-plot, fig.cap = "Score plot: each point is a sample, projected onto the first two latent components."}
+plot_pls_scores(model, color_by = "disease", add_ellipse = TRUE)
+```
+
+```{r pls-vip-plot, fig.cap = "VIP scores. The dashed line marks VIP = 1."}
+plot_pls_vip(model, top_n = 15)
+```
+
+```{r pls-loadings-plot, fig.cap = "Loadings: each cytokine's contribution to each latent component."}
+plot_pls_loadings(model)
+```
+
+```{r pls-biplot, fig.cap = "Biplot: scores and loadings on the same axes."}
+plot_pls_biplot(model, color_by = "disease")
+```
+
+There is also a `plot()` method on the model, with `plot_type` set to
+`"scores"`, `"loadings"`, `"vip"` or `"biplot"`.
+
+## 5. Summary and prediction
+
+```{r}
+summary(model)
+```
+
+`predict()` projects new samples onto the fitted model:
+
+```{r eval = FALSE}
+predict(model, newdata = new_preprocessed)
+```
+
+## OPLS-DA
+
+OPLS-DA splits variance into a predictive component and orthogonal
+components. Use `method = "OPLS-DA"` for two-class problems; for more
+than two classes, use PLS-DA.
+
+```{r eval = FALSE}
+opls <- plsda_fit(
+  preprocessed_data = preprocessed,
+  response_var      = "disease",
+  method            = "OPLS-DA",
+  n_components      = 2,          # 1 predictive + 1 orthogonal
+  permutations      = 200
+)
+
+plot_pls_scores(opls, color_by = "disease")
+plot_pls_vip(opls, top_n = 15)
+```
+
+## See also
+
+- `vignette("getting-started")` — the workflow end to end
+- `vignette("replicate-qc")` — aggregating replicates
+- `?plsda_preprocess`, `?plsda_fit`, `?recommend_cv_method`
+- `?plot_pls_scores`, `?plot_pls_loadings`, `?plot_pls_vip`,
+  `?plot_pls_biplot`
+
+## References
+
+- Wold, S., Sjöström, M., & Eriksson, L. (2001). PLS-regression: a
+  basic tool of chemometrics. *Chemometrics and Intelligent Laboratory
+  Systems*, 58(2), 109–130.
+- Trygg, J., & Wold, S. (2002). Orthogonal projections to latent
+  structures (O-PLS). *Journal of Chemometrics*, 16(3), 119–128.
+- Thévenot, E. A., et al. (2015). Analysis of the human adult urinary
+  metabolome variations with age, body mass index, and gender by
+  implementing a comprehensive workflow for univariate and OPLS
+  statistical analyses. *Journal of Proteome Research*, 14(8),
+  3322–3335.
